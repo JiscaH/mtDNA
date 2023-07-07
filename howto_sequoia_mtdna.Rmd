@@ -1,0 +1,106 @@
+---
+title: 'How to: sequoia + mtDNA'
+author: "Jisca Huisman"
+date: "2023-07-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+```
+
+## Background
+
+
+
+
+## Creating a mitochondrial similarity matrix
+
+
+### mtDNA sequencing
+
+TODO
+
+### From mtDNA sequence data to haplotype groups
+
+TODO
+
+
+
+
+### From haplotype group membership to similarity matrix
+
+In R, create a named vector with the haplotype group of each individual. Then, use base function `outer()` to create a matrix with whether each pair of individuals belongs to the same group (1) or different groups (0):
+
+```{r}
+haplo_V <- c(id1 = 'A', id2 = 'A', id3 = 'B', id4 = 'C', id5 = 'A')
+# or e.g.:
+# haplo_V <- setNames(c('A', 'A', 'B', 'C', 'A'), paste0('id', 1:5))
+
+haplo_same <- outer(haplo_V, haplo_V, FUN = function(x,y) as.numeric(x==y))
+haplo_same
+```
+
+
+
+#### Individuals with unknown mt haplotype
+
+
+##### mt haplotype known of matrilineal relatives
+
+If the mt haplotype of an individual is unknown, but that of its known mother, maternal sibling, or other matrilineal relative is known, it can generally be safely assumed that the focal individual has the same mt haplotype. Matrilineal relatives may for example be known from field observations, or from earlier pedigree reconstruction exercises. 
+
+For example, if the mt haplotype is only known for all pedigree founders, the haplotypes for all descendants can be determined as follows:
+
+```{r}
+# create example data:
+Pedigree <- sequoia::Ped_HSg5
+Pedigree$G <- sequoia::getGenerations(Pedigree)
+founders <- Pedigree$id[Pedigree$G == 0]
+
+mtHaps <- outer(LETTERS, LETTERS, FUN='paste0') %>%
+  sample(size = length(founders)) %>%
+  setNames(founders)
+
+# derive haplotypes of descendants:
+for (g in 1:max(Pedigree$G)) {
+  mtHaps <- with(Pedigree,
+                 c(mtHaps,
+                   mtHaps[dam[G==g]] %>% setNames(id[G==g])))
+}
+
+Pedigree$mt <- mtHaps[Pedigree$id]
+```
+
+
+Similarly, haplotypes of matrilineal ancestors can be determined as:
+
+```{r}
+# TODO
+```
+
+
+TODO: function with IN: mt haplotypes of any random set of individuals + pedigree,
+OUT: mt haplotypes of as many individuals in pedigree as possible
+
+
+##### Other
+
+Here it is relevant that `sequoia` only uses information about **dissimilar** mt haplotypes: if two individuals have different mt haplotypes, they cannot be maternal relatives. Individuals with the same mt haplotype may or may not be close relatives. Thus, if the mt haplotype of an individual is unknown, the most conservative approach is to say that it may (or may not) be similar to each of the other individuals. 
+
+For example, if individuals `id4` in the previous example has an unknown haplotype: 
+
+```{r}
+ids_haplo_unknown <- c('id4')
+haplo_same[ids_haplo_unknown,] <- 1
+haplo_same[,ids_haplo_unknown] <- 1
+haplo_same
+```
+Of course the mt haplotype of `id4` cannot be equal to both `id1` and `id3`; the 1's should be interpreted as 'might be the same' and the 0's as 'definitely not the same'.  
+
+Alternatively, `id4` may simply be omitted from the `haplo_same` matrix passed to `sequoia`. It will automatically interpret it as 'might have the same haplotype as any other inidividual'. 
+
+
+TODO: function with IN: dataframe with id + haplotype group, OUT: matrix, which also takes care of NA's. 
+
