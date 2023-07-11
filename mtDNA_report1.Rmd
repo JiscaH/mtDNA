@@ -1,0 +1,110 @@
+---
+title: "Use of mtDNA in pedigree reconstruction"
+author: "Jisca Huisman"
+date: "2023-07-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+One of the limitations of pedigree reconstruction with sequoia is that it is unable to differentiate between maternal and paternal relatives. For example, if one has an offspring cohort resulting from random mating between a set of unsampled parents, only full siblings will be assigned. Any putative half-sibling pairs can be identified using secondary functions, but are not assigned during pedigree reconstruction because it is unclear whether they share a mother or a father. 
+
+Use of mitochondrial information may lessen this problem. Maternal relatives will always share the same mitochondrial haplotype (mtDNA), while in a large outbred population paternal relatives rarely(?) do. In small or spatially structured populations however, related females may tend to mate with the same male (e.g. in Red deer; ref: Stopher et al, 2012, JEB), resulting in paternal half-siblings with identical mtDNA. 
+
+An additional potential difficulty is formed by genotyping errors, causing true maternal relatives to differ slightly in their apparent mt haplotype. 
+
+
+
+## Implementation
+
+### From mt sequence data to haplotype groups
+
+TODO.
+
+ref: e.g. Nussey et al, 2006, Heredity
+
+
+### From mt haplotype groups to could-be-maternal-relatives matrix ('mtM')
+
+In R, create a 2-column dataframe with the ID of each genotyped individual and the haplotype group it belongs to. Then, use base function `outer()` to create a matrix with whether each pair of individuals belongs to the same group (1) or different groups (0):
+
+```{r}
+haplo_V <- c(id1 = 'A', id2 = 'A', id3 = 'B', id4 = 'C', id5 = 'A')
+# or e.g.:
+# haplo_V <- setNames(c('A', 'A', 'B', 'C', 'A'), paste0('id', 1:5))
+
+haplo_same <- outer(haplo_V, haplo_V, FUN = function(x,y) as.numeric(x==y))
+haplo_same
+```
+
+It will become possible to provide this matrix as input to `sequoia()`. 
+
+
+
+### From 'mtM' to pedigree reconstruction
+
+When an individual does *not* have the same mt haplotype as a focal individual, the following relationships are impossible: 
+
+- mother
+- full sibling
+- maternal half-sibling
+- maternal grandmother
+- maternal full aunt/uncle (full sibling of mother)
+- maternal half-sibling of mother
+- maternal grandmother of mother
+
+
+TODO: pedigree diagram with coloured lines showing mtDNA inheritance
+
+
+Assignment is thus a process of elimination. For example, a pair of individuals which from autosomal DNA look to be second degree relatives, and which based on age cannot be grandparent-grandoffspring or full avuncular, and which do not share the same mtDNA haplotype, must be paternal half-siblings. 
+
+
+
+
+## Details of implementation in sequoia
+
+### Parent-offspring
+
+Usually, the sex of candidate parents is known. It is assumed that when mt haplotypes are known, X/Y or W/Z data is known as well and used to determine the sex of candidate parents. This would make the use of mtDNA to assign parents redundant.
+
+Possible exception: species with non-genetic sex determination, e.g. crocodiles. 
+
+
+### Siblings
+
+Subroutine `FindPairs` identifies all pairs of putative siblings, which are then passed to subroutine `Clustering` to cluster into sibships sharing the same unsampled dam and/or sire. 
+
+Subroutine `FindPairs` currently assesses whether a pair may be maternal (paternal) siblings based on:
+
+- At least one of the pair does not yet have a mother (father) assigned;
+- One is not already the mother (father) of the other;
+- Their age difference is allowed for maternal (paternal) siblings, or unknown.
+
+This checklist can easily be extended with:
+
+- Must share the same mt haplotype to be potential maternal siblings. 
+
+This affects both maternal half-siblings as full siblings. 
+
+
+### Grandparents of half-sibships
+
+For large clusters of half-siblings and with a sufficient number of autosomal SNPs, it is usually very clear whether or not an individual is a grandparent. Nonetheless, for maternal sibships a check that the potential grandmother has the same mt haplotype as all siblings may form a quick and easy additional filtering step. This could reduce false positive assignments and speed up computation, especially for smaller sibships and/or with a limited number of autosomal SNPs. 
+
+
+### Grandparents of full sibships and singletons
+
+For a cluster of full siblings ($n>=1$) where both parents are unsampled, it cannot be determined based on autosomal SNPs whether a genetically identified grandparent is a maternal or paternal grandparent. Using mtDNA, a grandmother must be paternal if she has a different mt haplotype from the full siblings. A grandmother with the same mt haplotype may be paternal or maternal, but if there are 2 candidate grandmothers, the one not sharing an mt haplotype must be paternal and the other one (thus) maternal. Grandfathers can subsequently be assigned, by making a complementary pair with the assigned grandmother(s) or not. 
+
+
+
+
+
+
+
+
