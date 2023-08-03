@@ -43,3 +43,33 @@ infer_mt_haplotype <- function(Pedigree, mtHaps) {
 
   return( mtHaps )
 }
+
+
+
+#===============================================================================
+# simulate mtSame matrix for a pedigree, assuming all female founders have a
+# unique mitochondrial haplotype
+
+sim_mtSame <- function(Pedigree)
+{
+  library(magrittr)  # for %>%
+
+  # check & format pedigree
+  Pedigree <- sequoia::PedPolish(Pedigree)
+  # get generation number for each individual
+  Pedigree$G <- sequoia::getGenerations(Pedigree)
+
+  # make up unique mt haplotype for each founder
+  mtHaps_founders <- outer(LETTERS, LETTERS, FUN='paste0') %>%
+    sample(size = sum(Pedigree$G==0)) %>%
+    setNames(Pedigree$id[Pedigree$G==0])
+  # infer mt hap for all descendants
+  mtHaps_all <- infer_mt_haplotype(Pedigree, mtHaps_founders)
+  # add to pedigree
+  Pedigree$mt <- mtHaps_all[Pedigree$id]
+  # create matrix indicating for each pair of individuals whether they have the
+  # same (1) or different (0) haplotype
+  mtSame <- outer(mtHaps_all, mtHaps_all, FUN = function(x,y) as.numeric(x==y))
+
+  return( mtSame )
+}
