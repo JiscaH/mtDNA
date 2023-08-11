@@ -46,11 +46,11 @@
 #'   a range of parameter values, it may be prudent to save the required summary
 #'   statistics for each run rather than the full output.
 #'
-#'
-#' @param LifeHistData dataframe with id, sex (1=female, 2=male, 3=unknown),
-#' birth year, and optionally BY.min - BY.max - YearLast.
+#' @param simped_fun  function returning a pedigree with columns id-dam-sire-birthyear-sex.
 #' @param args.simped list of arguments to \code{SimPed}. \code{source()} this
 #'   function first, available from https://github.com/JiscaH/sequoiaExtra .
+#' @param  withLH  logical, pass in each run the BirthYear + Sex simulated by \code{SimPed}
+#'   to \code{sequoia}
 #' @param mt  logical, with/without \code{mtSame}. Simulated with every female
 #'   founder having a unique mitochondrial haplotype. requires
 #'   \code{source('infer_mt_haplotype.R')}, available from same github repo.
@@ -183,8 +183,9 @@
 #' @export
 
 
-EstConf_simped <- function(LifeHistData = NULL,
+EstConf_simped <- function(simped_fun = SimPed,
                            args.simped = list(N_dam=100, EPP=0.1, N_offspring = c(0.2,0.3,0.3,0.2)),
+                           withLH = TRUE,
                            mt = FALSE,
                            args.sim = list(nSnp = 400, SnpError = 1e-3, ParMis=c(0.4, 0.4)),
                            args.seq = list(Module="ped", Err=1e-3, Tassign=0.5, CalcLLR = FALSE),
@@ -192,7 +193,7 @@ EstConf_simped <- function(LifeHistData = NULL,
                            nCores = 1,
                            quiet=TRUE)
 {
-
+  
   # check input ----
   #  if (is.null(Pedigree))  stop("Please provide Pedigree")
   #  if (is.null(LifeHistData))  stop("Please provide LifeHistData")
@@ -200,36 +201,31 @@ EstConf_simped <- function(LifeHistData = NULL,
   if (!is.null(args.seq) & !is.list(args.seq))  stop("args.seq should be a list or NULL")
   if (!sequoia:::is.wholenumber(nSim) || nSim<1 || length(nSim)>1)
     stop("nSim must be a single positive number")
-
+  if (packageVersion('sequoia') < '2.7')  mt <- FALSE
+  
   if (!quiet %in% c(TRUE, FALSE, "very"))  stop("'quiet' must be TRUE, FALSE, or 'very'")
   quiet.EC <- ifelse(quiet == "very", TRUE, FALSE)
   quiet <- ifelse(quiet %in% c("very", TRUE), TRUE, FALSE)
   if (!"quiet" %in% names(args.sim))  args.sim <- c(args.sim, list(quiet = quiet))
   if (!"quiet" %in% names(args.seq))  args.seq <- c(args.seq, list(quiet = quiet))
-
+  
   if ("Err" %in% names(args.sim)) {
     args.sim[["SnpError"]] <- args.sim[["Err"]]
     args.sim[["Err"]] <- NULL    # common confusion, otherwise fuzy matching with 'ErrorFM'.
   }
-
-  #  if (!is.null(Pedigree) {
-  #    Ped.ref <- PedPolish(Pedigree, KeepAllColumns=FALSE)
-  #    if (any(substr(unlist(Ped.ref),1,6) %in% c("sim_F0", "sim_M0"))) {
-  #      stop("Please don't use 'sim_F' or 'sim_M' in reference pedigree")
-  #    }
-  #  } else {
+  
   Ped.ref_L <- list()
-  mtSame_L <- list()
+  LH_L <- vector('list', nSim)
+  mtSame_L <- vector('list', nSim)
   for (i in 1:nSim) {
-    Pedigree_i <- do.call(SimPed, args.simped)
+    Pedigree_i <- do.call(simped_fun, args.simped)
     Ped.ref_L[[i]] <- sequoia::PedPolish(Pedigree_i, KeepAllColumns=FALSE)
+    if (withLH)  LH_L[[i]] <- Pedigree_i[,c(1,4,5)]   # skip dam & sire columns
     if (mt) {
       mtSame_L[[i]] <- sim_mtSame(Ped.ref_L[[i]])
     }
   }
-  #  }
-
-
+  
   if ("Module" %in% names(args.seq)) {
     ParSib <- ifelse(args.seq$Module == "ped", "sib", "par")
   } else if ("MaxSibIter" %in% names(args.seq)) {
@@ -237,7 +233,7 @@ EstConf_simped <- function(LifeHistData = NULL,
   } else {
     ParSib <- "sib"   # default Module = "ped"
   }
-
+  
   if (!quiet.EC) {
     if (ParSib == "par") {
       message("Simulating parentage assignment only ...")
@@ -245,12 +241,11 @@ EstConf_simped <- function(LifeHistData = NULL,
       message("Simulating full pedigree reconstruction ...")
     }
   }
-
-
+  
   # no. cores ----
   if (!is.null(nCores) && (!sequoia:::is.wholenumber(nCores) || nCores<1))
     stop("nCores must be a positive number, or NULL")
-
+  
   if (is.null(nCores) || nCores>1) {
     if (!requireNamespace("parallel", quietly = TRUE)) {
       if (interactive() & !quiet.EC) {
@@ -271,16 +266,16 @@ EstConf_simped <- function(LifeHistData = NULL,
     }
     if (!quiet.EC)  message("Using ", nCores, " out of ", maxCores, " cores")
   }
-
-
+  
+  
   utils::flush.console()
-
+  
   #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   # function to simulate genotypes & infer pedigree ----
-
+  
   #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
   SimInfer <- function(i, RefPedigree, args.sim,
-                       LifeHistData, args.seq,
+                       LHs, args.seq, mtSames,
                        quiet.EC, ParSib)
   {
     if (!quiet.EC)  cat("i=", i, "\t", format(Sys.time(), "%H:%M:%S"), "\n")
@@ -288,12 +283,15 @@ EstConf_simped <- function(LifeHistData = NULL,
     OUT.i <- list()
     GM <- do.call(sequoia::SimGeno, c(list(Pedigree=RefPedigree[[i]]), args.sim))
     OUT.i$SimSNPd <- rownames(GM)
+    args.seq.all <-  c(list(GenoM = GM,
+                            LifeHistData = LHs[[i]],
+                            DummyPrefix = c("sim_F", "sim_M"),
+                            Plot = FALSE),
+                       args.seq)
+    # add mtSame separately, so that script also runs with sequoia < 2.7
+    if (!is.null(mtSames[[i]]))   args.seq.all <- c(args.seq.all, mtSame = mtSames[[i]])  
     OUT.i$RunTime <- system.time(Seq.i <- do.call(sequoia::sequoia,
-                                                  c(list(GenoM = GM,
-                                                         LifeHistData = LifeHistData,
-                                                         DummyPrefix = c("sim_F", "sim_M"),
-                                                         Plot = FALSE),
-                                                    args.seq) ))["elapsed"]
+                                                  args.seq.all))["elapsed"]
     rm(GM)
     gc()
     if (ParSib == "par") {
@@ -304,33 +302,35 @@ EstConf_simped <- function(LifeHistData = NULL,
     return( OUT.i )
   }
   #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-
+  
   # call above function, for 1 or >1 cores ----
   if (nCores>1) {
     cl <- parallel::makeCluster(nCores)
     AllOUT <- parallel::parLapply(cl, X=seq.int(nSim), fun=SimInfer,
                                   RefPedigree = Ped.ref_L,
-                                  args.sim, LifeHistData, args.seq,
+                                  mtSames = mtSame_L,
+                                  args.sim, LHs=LH_L, args.seq,
                                   quiet.EC=TRUE, ParSib)
     #                                  chunk.size=1)
     parallel::stopCluster(cl)
   } else {
     AllOUT <- plyr::llply(seq.int(nSim), .fun=SimInfer,
                           RefPedigree = Ped.ref_L,
-                          args.sim, LifeHistData, args.seq,
+                          mtSames = mtSame_L,
+                          args.sim, LHs=LH_L, args.seq,
                           quiet.EC, ParSib)
   }
   RunTime <- sapply(AllOUT, "[[", "RunTime")
   Pedigree.inferred <- sapply(AllOUT, "[", "Pedigree.inferred")
   SimSNPd <- sapply(AllOUT, "[", "SimSNPd")
-
-
+  
+  
   #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   # confidence probabilities ----
   nSimz <- ifelse(nSim>1, nSim,2)  # else problems w R auto-dropping dimension
   CatNames <- c("G", "D", "X")
   ClassNames <- c("Match", "Mismatch", "P1only", "P2only", "_")
-
+  
   PC.rev.cd <- array(0, dim = c(nSimz, 3,3,3, 5,5),
                      dimnames = list(iter = seq_len(nSimz),
                                      id.cat = CatNames, dam.cat = CatNames, sire.cat = CatNames,
@@ -341,7 +341,7 @@ EstConf_simped <- function(LifeHistData = NULL,
                                              SNPd = SimSNPd[[i]],
                                              Symmetrical=FALSE, Plot=FALSE)$Counts.detail
   }
-
+  
   Ntot <- apply(PC.rev.cd, c('id.cat', 'dam.cat', 'sire.cat'), sum)
   OK <- list('G' = 'Match',
              'D' = 'Match',
@@ -356,10 +356,10 @@ EstConf_simped <- function(LifeHistData = NULL,
       confA['pair.conf',,i,j] <- apply(PC.rev.cd[,,i,j,OK[[i]],OK[[j]]], 'id.cat', sum) / Ntot[,i,j]
     }
   }
-
+  
   confA[c("dam.conf" , "pair.conf"),,"X",] <- NA  # no dam
   confA[c("sire.conf", "pair.conf"),,,"X"] <- NA  # no sire
-
+  
   Conf.df <- plyr::adply(confA, .margins=2:4)
   Conf.df <- merge(Conf.df,
                    plyr::adply(Ntot, .margins=3:1, function(x) data.frame(N=x)))
@@ -369,8 +369,8 @@ EstConf_simped <- function(LifeHistData = NULL,
                          Conf.df$sire.cat %in% c('G','X'), ]
   }
   Conf.df <- Conf.df[order(Conf.df$id.cat, Conf.df$dam.cat, Conf.df$sire.cat), ]
-
-
+  
+  
   #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   # assignment errors (ignores co-parent) ----
   PedComp.fwd <-  array(0, dim=c(nSimz, 7,5,2),
@@ -384,26 +384,26 @@ EstConf_simped <- function(LifeHistData = NULL,
                                              SNPd = SimSNPd[[i]],
                                              Symmetrical=FALSE, Plot=FALSE)$Counts
   }
-
+  
   PedComp.tmp <- apply(PedComp.fwd, 2:4, sum)
   PedErrors <- sweep(PedComp.tmp[,c("P1only", "P2only","Mismatch"),], c(1,3),
                      PedComp.tmp[,"Total",], "/")
   PedErrors[c("GG", "GD", "DG", "DD"), "P2only", ] <- NA  # if parent in ref. pedigree, by def not P2only
   dimnames(PedErrors)[['class']] <- c("FalseNeg", "FalsePos", "Mismatch")
-
-
-
+  
+  
+  
   #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   # out ----
   RunParams <- list(EstConf = sequoia:::namedlist(args.sim, args.seq, nSim, nCores),
                     SimGeno_default = formals(SimGeno),
                     sequoia_default = formals(sequoia),
                     sequoia_version = as.character(utils::packageVersion("sequoia")))
-
+  
   return( list(ConfProb = Conf.df,
                PedErrors = PedErrors,
                Pedigree.reference = Ped.ref_L,
-               LifeHistData = LifeHistData,
+               LifeHistData = LH_L,
                Pedigree.inferred = Pedigree.inferred,
                SimSNPd = SimSNPd,
                PedComp.fwd = PedComp.fwd,
